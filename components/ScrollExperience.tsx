@@ -63,7 +63,7 @@ export default function ScrollExperience() {
     showHint: true,
   });
 
-  function drawSingleImage(ctx: CanvasRenderingContext2D, img: HTMLImageElement, alpha: number) {
+  function drawSingleImage(ctx: CanvasRenderingContext2D, img: HTMLImageElement) {
     if (!img || !img.complete || !img.naturalWidth) return;
     const { width: cw, height: ch } = ctx.canvas;
     const iw = img.naturalWidth;
@@ -71,11 +71,10 @@ export default function ScrollExperience() {
     const s = Math.max(cw / iw, ch / ih);
     const w = iw * s;
     const h = ih * s;
-    ctx.globalAlpha = alpha;
     ctx.drawImage(img, (cw - w) / 2, (ch - h) * 0.2, w, h);
   }
 
-  function drawBlendedSequence(
+  function drawSequenceFrame(
     ctx: CanvasRenderingContext2D,
     frames: HTMLImageElement[],
     t: number,
@@ -83,27 +82,12 @@ export default function ScrollExperience() {
     force = false
   ) {
     if (!frames.length) return;
-    const exact = clamp(t, 0, 1) * (frames.length - 1);
-    if (!force && Math.abs(exact - lastRef.current) < 0.002) return;
-    lastRef.current = exact;
-
-    const i0 = Math.floor(exact);
-    const i1 = Math.min(frames.length - 1, i0 + 1);
-    const frac = exact - i0;
-
-    const img0 = frames[i0];
-    if (!img0 || !img0.complete || !img0.naturalWidth) return;
-
-    drawSingleImage(ctx, img0, 1);
-
-    // Sub-frame crossfade blending for silky-smooth video-like transitions
-    if (frac > 0.015 && i1 !== i0) {
-      const img1 = frames[i1];
-      if (img1 && img1.complete && img1.naturalWidth) {
-        drawSingleImage(ctx, img1, frac);
-      }
-    }
-    ctx.globalAlpha = 1;
+    const idx = Math.round(clamp(t, 0, 1) * (frames.length - 1));
+    if (!force && idx === lastRef.current) return;
+    const img = frames[idx];
+    if (!img || !img.complete || !img.naturalWidth) return;
+    lastRef.current = idx;
+    drawSingleImage(ctx, img);
   }
 
   function applyFrame(pr: number, force = false) {
@@ -114,14 +98,14 @@ export default function ScrollExperience() {
     if (pr <= ABOUT_IN_END + 0.02) {
       const ctx1 = ctx1Ref.current;
       if (ctx1 && a.length) {
-        drawBlendedSequence(ctx1, a, range(pr, 0, V1_END), lastDrawn1, force);
+        drawSequenceFrame(ctx1, a, range(pr, 0, V1_END), lastDrawn1, force);
       }
     }
 
     if (pr >= V2_IN_START - 0.02) {
       const ctx2 = ctx2Ref.current;
       if (ctx2 && b.length) {
-        drawBlendedSequence(ctx2, b, range(pr, V2_IN_END, 1), lastDrawn2, force);
+        drawSequenceFrame(ctx2, b, range(pr, V2_IN_END, 1), lastDrawn2, force);
       }
     }
 
@@ -268,9 +252,9 @@ export default function ScrollExperience() {
       const current = smoothProgress.current;
       const diff = target - current;
 
-      if (Math.abs(diff) > 0.00015) {
-        // Smooth lerp damping (0.20 gives cinematic, lag-free 60fps video feel on mobile & desktop)
-        smoothProgress.current = current + diff * 0.2;
+      if (Math.abs(diff) > 0.0002) {
+        // Fast 1x real-time response (0.48 avoids slow-motion drag while keeping frame stepping fluid)
+        smoothProgress.current = current + diff * 0.48;
         applyFrame(smoothProgress.current, false);
         rafId = requestAnimationFrame(tick);
       } else {

@@ -142,13 +142,13 @@ body {
    SCROLL TRACK & VIDEO SECTIONS
    ========================================================= */
 .scroll-root {
-  height: 680vh;
+  height: 400vh;
   position: relative;
 }
 
 @media (max-width: 768px) {
   .scroll-root {
-    height: 540vh;
+    height: 340vh;
   }
 }
 
