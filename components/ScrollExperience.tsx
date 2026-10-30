@@ -26,26 +26,197 @@ export default function ScrollExperience() {
   const contactRef = useRef<HTMLElement>(null);
   const canvas1Ref = useRef<HTMLCanvasElement>(null);
   const canvas2Ref = useRef<HTMLCanvasElement>(null);
+  const ctx1Ref = useRef<CanvasRenderingContext2D | null>(null);
+  const ctx2Ref = useRef<CanvasRenderingContext2D | null>(null);
+
+  // Direct DOM refs to avoid 60fps React re-renders while scrolling
+  const sec1Ref = useRef<HTMLElement>(null);
+  const aboutSecRef = useRef<HTMLElement>(null);
+  const sec2Ref = useRef<HTMLElement>(null);
+  const aboutVisualRef = useRef<HTMLDivElement>(null);
+  const aboutImgRef = useRef<HTMLImageElement>(null);
+  const progressRef = useRef<HTMLDivElement>(null);
+
   const images = useRef<HTMLImageElement[][]>([[], []]);
-  const progress = useRef(0);
-  const [p, setP] = useState(0);
+  const targetProgress = useRef(0);
+  const smoothProgress = useRef(0);
+  const lastDrawn1 = useRef(-1);
+  const lastDrawn2 = useRef(-1);
+
   const [loaded, setLoaded] = useState(0);
-  const [hasScrolled, setHasScrolled] = useState(false);
   const [navSolid, setNavSolid] = useState(false);
   const [contactVisible, setContactVisible] = useState(false);
 
-  // Preload frames
+  // Discrete visibility states (only trigger React render when a threshold is crossed)
+  const [showPhrase1, setShowPhrase1] = useState(true);
+  const [showPhrase2, setShowPhrase2] = useState(false);
+  const [aboutActive, setAboutActive] = useState(false);
+  const [showV2Editorial, setShowV2Editorial] = useState(false);
+  const [showHint, setShowHint] = useState(true);
+
+  const stateCache = useRef({
+    navSolid: false,
+    showPhrase1: true,
+    showPhrase2: false,
+    aboutActive: false,
+    showV2Editorial: false,
+    showHint: true,
+  });
+
+  function drawSingleImage(ctx: CanvasRenderingContext2D, img: HTMLImageElement, alpha: number) {
+    if (!img || !img.complete || !img.naturalWidth) return;
+    const { width: cw, height: ch } = ctx.canvas;
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
+    const s = Math.max(cw / iw, ch / ih);
+    const w = iw * s;
+    const h = ih * s;
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(img, (cw - w) / 2, (ch - h) * 0.2, w, h);
+  }
+
+  function drawBlendedSequence(
+    ctx: CanvasRenderingContext2D,
+    frames: HTMLImageElement[],
+    t: number,
+    lastRef: React.MutableRefObject<number>,
+    force = false
+  ) {
+    if (!frames.length) return;
+    const exact = clamp(t, 0, 1) * (frames.length - 1);
+    if (!force && Math.abs(exact - lastRef.current) < 0.002) return;
+    lastRef.current = exact;
+
+    const i0 = Math.floor(exact);
+    const i1 = Math.min(frames.length - 1, i0 + 1);
+    const frac = exact - i0;
+
+    const img0 = frames[i0];
+    if (!img0 || !img0.complete || !img0.naturalWidth) return;
+
+    drawSingleImage(ctx, img0, 1);
+
+    // Sub-frame crossfade blending for silky-smooth video-like transitions
+    if (frac > 0.015 && i1 !== i0) {
+      const img1 = frames[i1];
+      if (img1 && img1.complete && img1.naturalWidth) {
+        drawSingleImage(ctx, img1, frac);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function applyFrame(pr: number, force = false) {
+    const a = images.current[0];
+    const b = images.current[1];
+
+    // 1. Draw only the active video canvas
+    if (pr <= ABOUT_IN_END + 0.02) {
+      const ctx1 = ctx1Ref.current;
+      if (ctx1 && a.length) {
+        drawBlendedSequence(ctx1, a, range(pr, 0, V1_END), lastDrawn1, force);
+      }
+    }
+
+    if (pr >= V2_IN_START - 0.02) {
+      const ctx2 = ctx2Ref.current;
+      if (ctx2 && b.length) {
+        drawBlendedSequence(ctx2, b, range(pr, V2_IN_END, 1), lastDrawn2, force);
+      }
+    }
+
+    // 2. Update section transforms directly on DOM (GPU-accelerated translate3d, 0 React re-renders)
+    const slideAbout = range(pr, V1_END, ABOUT_IN_END);
+    const slideV2 = range(pr, V2_IN_START, V2_IN_END);
+    const aboutHold = range(pr, ABOUT_IN_END, V2_IN_START);
+
+    if (sec1Ref.current) {
+      sec1Ref.current.style.transform = `translate3d(0, ${(-slideAbout * 18).toFixed(2)}%, 0) scale(${(
+        1 -
+        slideAbout * 0.04
+      ).toFixed(4)})`;
+    }
+
+    if (aboutSecRef.current) {
+      const y = (1 - slideAbout) * 100 - slideV2 * 14;
+      const sc = 1 - slideV2 * 0.03;
+      aboutSecRef.current.style.transform = `translate3d(0, ${y.toFixed(2)}%, 0) scale(${sc.toFixed(4)})`;
+    }
+
+    if (aboutVisualRef.current) {
+      aboutVisualRef.current.style.transform = `translate3d(0, ${((0.5 - aboutHold) * 10).toFixed(1)}px, 0)`;
+    }
+
+    if (aboutImgRef.current) {
+      aboutImgRef.current.style.transform = `scale(${(
+        1.08 -
+        slideAbout * 0.05 +
+        aboutHold * 0.04
+      ).toFixed(4)})`;
+    }
+
+    if (sec2Ref.current) {
+      sec2Ref.current.style.transform = `translate3d(0, ${((1 - slideV2) * 100).toFixed(2)}%, 0)`;
+    }
+
+    if (progressRef.current) {
+      progressRef.current.style.transform = `scaleX(${pr.toFixed(4)})`;
+    }
+
+    // 3. Only trigger React state updates when discrete thresholds flip
+    const cache = stateCache.current;
+    const nextP1 = pr >= 0 && pr < 0.15;
+    const nextP2 = pr >= 0.15 && pr < 0.34;
+    const nextAbout = pr >= 0.33 && pr < 0.68;
+    const nextV2 = pr >= 0.71 && pr <= 1.01;
+    const nextHint = pr < V1_END;
+
+    if (cache.showPhrase1 !== nextP1) {
+      cache.showPhrase1 = nextP1;
+      setShowPhrase1(nextP1);
+    }
+    if (cache.showPhrase2 !== nextP2) {
+      cache.showPhrase2 = nextP2;
+      setShowPhrase2(nextP2);
+    }
+    if (cache.aboutActive !== nextAbout) {
+      cache.aboutActive = nextAbout;
+      setAboutActive(nextAbout);
+    }
+    if (cache.showV2Editorial !== nextV2) {
+      cache.showV2Editorial = nextV2;
+      setShowV2Editorial(nextV2);
+    }
+    if (cache.showHint !== nextHint) {
+      cache.showHint = nextHint;
+      setShowHint(nextHint);
+    }
+  }
+
+  // Preload & pre-decode all frames into GPU memory so mobile never stalls mid-scroll
   useEffect(() => {
     const total = SEQS.reduce((s, q) => s + q.count, 0);
     let done = 0;
+    const markDone = () => {
+      done++;
+      setLoaded(Math.round((done / total) * 100));
+      if (done === 1 || done === total) {
+        applyFrame(smoothProgress.current, true);
+      }
+    };
+
     SEQS.forEach((q, si) => {
       for (let i = 0; i < q.count; i++) {
         const img = new Image();
-        img.onload = img.onerror = () => {
-          done++;
-          setLoaded(Math.round((done / total) * 100));
-          if (done === total) draw();
+        img.decoding = "async";
+        img.onload = () => {
+          if (typeof img.decode === "function") {
+            img.decode().then(markDone).catch(markDone);
+          } else {
+            markDone();
+          }
         };
+        img.onerror = markDone;
         img.src = src(q.dir, i);
         images.current[si][i] = img;
       }
@@ -53,65 +224,96 @@ export default function ScrollExperience() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function drawFrame(ctx: CanvasRenderingContext2D, img: HTMLImageElement | undefined) {
-    if (!img || !img.complete || !img.naturalWidth) return;
-    const { width: cw, height: ch } = ctx.canvas;
-    const iw = img.naturalWidth,
-      ih = img.naturalHeight;
-    ctx.clearRect(0, 0, cw, ch);
-    const s = Math.max(cw / iw, ch / ih);
-    const w = iw * s;
-    const h = ih * s;
-    ctx.drawImage(img, (cw - w) / 2, (ch - h) * 0.2, w, h);
-  }
-
-  function draw() {
-    const pr = progress.current;
-    const a = images.current[0];
-    const b = images.current[1];
-
-    const c1 = canvas1Ref.current;
-    const ctx1 = c1?.getContext("2d");
-    if (ctx1 && a.length) {
-      const fa = Math.round(range(pr, 0, V1_END) * (a.length - 1));
-      drawFrame(ctx1, a[fa]);
-    }
-
-    const c2 = canvas2Ref.current;
-    const ctx2 = c2?.getContext("2d");
-    if (ctx2 && b.length) {
-      const fb = Math.round(range(pr, V2_IN_END, 1) * (b.length - 1));
-      drawFrame(ctx2, b[fb]);
-    }
-  }
-
-  // Scroll + resize
+  // Smooth inertial RAF scrub loop + resize listener
   useEffect(() => {
-    const resize = () => {
-      const dpr = Math.min(devicePixelRatio || 1, 2);
+    let lastW = 0;
+    let lastH = 0;
+    let rafId = 0;
+    let running = false;
+
+    const initContexts = () => {
+      if (canvas1Ref.current && !ctx1Ref.current) {
+        ctx1Ref.current = canvas1Ref.current.getContext("2d", { alpha: false });
+      }
+      if (canvas2Ref.current && !ctx2Ref.current) {
+        ctx2Ref.current = canvas2Ref.current.getContext("2d", { alpha: false });
+      }
+    };
+
+    const resize = (force = false) => {
+      const w = innerWidth;
+      const h = innerHeight;
+      // Ignore small height-only resizes caused by mobile browser address bar hiding/showing
+      if (!force && Math.abs(w - lastW) < 2 && Math.abs(h - lastH) < 160) {
+        return;
+      }
+      lastW = w;
+      lastH = h;
+
+      const maxDpr = w < 768 ? 1.5 : 2;
+      const dpr = Math.min(devicePixelRatio || 1, maxDpr);
       [canvas1Ref.current, canvas2Ref.current].forEach((c) => {
         if (!c) return;
-        c.width = innerWidth * dpr;
-        c.height = innerHeight * dpr;
+        c.width = Math.round(w * dpr);
+        c.height = Math.round(h * dpr);
       });
-      draw();
+      initContexts();
+      if (ctx1Ref.current) ctx1Ref.current.imageSmoothingQuality = "medium";
+      if (ctx2Ref.current) ctx2Ref.current.imageSmoothingQuality = "medium";
+      applyFrame(smoothProgress.current, true);
     };
-    let raf = 0;
+
+    const tick = () => {
+      const target = targetProgress.current;
+      const current = smoothProgress.current;
+      const diff = target - current;
+
+      if (Math.abs(diff) > 0.00015) {
+        // Smooth lerp damping (0.20 gives cinematic, lag-free 60fps video feel on mobile & desktop)
+        smoothProgress.current = current + diff * 0.2;
+        applyFrame(smoothProgress.current, false);
+        rafId = requestAnimationFrame(tick);
+      } else {
+        smoothProgress.current = target;
+        applyFrame(target, false);
+        running = false;
+      }
+    };
+
+    const startLoop = () => {
+      if (!running) {
+        running = true;
+        rafId = requestAnimationFrame(tick);
+      }
+    };
+
     const onScroll = () => {
       const track = trackRef.current;
-      const max = track ? track.offsetHeight - innerHeight : document.documentElement.scrollHeight - innerHeight;
-      progress.current = max > 0 ? clamp(scrollY / max, 0, 1) : 0;
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        draw();
-        setP(progress.current);
-        if (scrollY > 4) setHasScrolled(true);
-        setNavSolid(scrollY > 40);
-      });
+      const max = track
+        ? track.offsetHeight - innerHeight
+        : document.documentElement.scrollHeight - innerHeight;
+      targetProgress.current = max > 0 ? clamp(scrollY / max, 0, 1) : 0;
+
+      const nextNavSolid = scrollY > 40;
+      if (stateCache.current.navSolid !== nextNavSolid) {
+        stateCache.current.navSolid = nextNavSolid;
+        setNavSolid(nextNavSolid);
+      }
+
+      startLoop();
     };
-    resize();
-    onScroll();
-    addEventListener("resize", resize);
+
+    const handleResize = () => resize(false);
+
+    resize(true);
+    const track = trackRef.current;
+    const maxInit = track ? track.offsetHeight - innerHeight : 1;
+    const initP = maxInit > 0 ? clamp(scrollY / maxInit, 0, 1) : 0;
+    targetProgress.current = initP;
+    smoothProgress.current = initP;
+    applyFrame(initP, true);
+
+    addEventListener("resize", handleResize, { passive: true });
     addEventListener("scroll", onScroll, { passive: true });
 
     const contactEl = contactRef.current;
@@ -131,9 +333,9 @@ export default function ScrollExperience() {
     }
 
     return () => {
-      removeEventListener("resize", resize);
+      removeEventListener("resize", handleResize);
       removeEventListener("scroll", onScroll);
-      cancelAnimationFrame(raf);
+      cancelAnimationFrame(rafId);
       observer?.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -150,12 +352,6 @@ export default function ScrollExperience() {
     const el = document.getElementById("contato");
     if (el) el.scrollIntoView({ behavior: "smooth" });
   };
-
-  const show = (a: number, b: number) => (p >= a && p < b ? "show" : "");
-  const slideAbout = range(p, V1_END, ABOUT_IN_END);
-  const slideV2 = range(p, V2_IN_START, V2_IN_END);
-  const aboutActive = p >= 0.33 && p < 0.68;
-  const aboutHold = range(p, ABOUT_IN_END, V2_IN_START);
 
   return (
     <>
@@ -208,17 +404,17 @@ export default function ScrollExperience() {
           <div className="stage">
             {/* Section 1: First video sequence */}
             <section
+              ref={sec1Ref}
               className="video-section"
               style={{
                 zIndex: 1,
-                transform: `translateY(${-slideAbout * 18}%) scale(${1 - slideAbout * 0.04})`,
-                filter: `brightness(${1 - slideAbout * 0.45})`,
+                transform: "translate3d(0, 0%, 0) scale(1)",
               }}
             >
               <canvas ref={canvas1Ref} />
               <div className="shade" />
 
-              <h1 className={`phrase phrase-first ${show(0, 0.15)}`}>
+              <h1 className={`phrase phrase-first ${showPhrase1 ? "show" : ""}`}>
                 O SEU
                 <br />
                 CORPO É
@@ -230,7 +426,7 @@ export default function ScrollExperience() {
                 HÁBITOS.
               </h1>
 
-              <div className={`phrase small ${show(0.15, 0.34)}`}>
+              <div className={`phrase small ${showPhrase2 ? "show" : ""}`}>
                 <div className="story-eyebrow">
                   <span className="story-eyebrow-text">ATENÇÃO</span>
                   <span className="story-eyebrow-line" aria-hidden="true" />
@@ -253,30 +449,31 @@ export default function ScrollExperience() {
 
             {/* Section 2 (Middle): About Us in the style of the reference */}
             <section
+              ref={aboutSecRef}
               className={`video-section about-section ${aboutActive ? "about-active" : ""}`}
               style={{
                 zIndex: 2,
-                transform: `translateY(${(1 - slideAbout) * 100 - slideV2 * 14}%) scale(${1 - slideV2 * 0.03
-                  })`,
-                filter: `brightness(${1 - slideV2 * 0.35})`,
+                transform: "translate3d(0, 100%, 0) scale(1)",
               }}
             >
               <div className="about-ambient-glow" aria-hidden="true" />
               <div className="about-container">
                 {/* Left collage */}
                 <div
+                  ref={aboutVisualRef}
                   className="about-visual"
                   style={{
-                    transform: `translateY(${(0.5 - aboutHold) * 10}px)`,
+                    transform: "translate3d(0, 5px, 0)",
                   }}
                 >
                   <div className="about-photo-main">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
+                      ref={aboutImgRef}
                       src="/images/doctor.png"
                       alt="Dr. Kalil Gibran"
                       style={{
-                        transform: `scale(${1.08 - slideAbout * 0.05 + aboutHold * 0.04})`,
+                        transform: "scale(1.08)",
                       }}
                     />
                   </div>
@@ -347,16 +544,17 @@ export default function ScrollExperience() {
 
             {/* Section 3: Second video slides up from bottom over About Us */}
             <section
+              ref={sec2Ref}
               className="video-section section-two"
               style={{
                 zIndex: 3,
-                transform: `translateY(${(1 - slideV2) * 100}%)`,
+                transform: "translate3d(0, 100%, 0)",
               }}
             >
               <canvas ref={canvas2Ref} />
               <div className="shade" />
 
-              <div className={`phrase v2-editorial ${show(0.71, 1.01)}`}>
+              <div className={`phrase v2-editorial ${showV2Editorial ? "show" : ""}`}>
                 <h2 className="v2-headline">
                   <span className="v2-stanza-top">
                     A CARNE
@@ -403,7 +601,7 @@ export default function ScrollExperience() {
 
             {/* Scroll prompt ONLY during the first video */}
             <div
-              className={`hint ${loaded === 100 && p < V1_END ? "show" : ""}`}
+              className={`hint ${loaded === 100 && showHint ? "show" : ""}`}
               style={{ zIndex: 10 }}
             >
               <span className="hint-rule" aria-hidden="true" />
@@ -411,7 +609,11 @@ export default function ScrollExperience() {
               <span className="hint-rule" aria-hidden="true" />
             </div>
 
-            <div className="progress" style={{ transform: `scaleX(${p})`, zIndex: 10 }} />
+            <div
+              ref={progressRef}
+              className="progress"
+              style={{ transform: "scaleX(0)", zIndex: 10 }}
+            />
             {loaded < 100 && (
               <div className="loader" style={{ zIndex: 20 }}>
                 Carregando {loaded}%

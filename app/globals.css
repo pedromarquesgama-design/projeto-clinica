@@ -142,14 +142,21 @@ body {
    SCROLL TRACK & VIDEO SECTIONS
    ========================================================= */
 .scroll-root {
-  height: 820vh;
+  height: 680vh;
   position: relative;
+}
+
+@media (max-width: 768px) {
+  .scroll-root {
+    height: 540vh;
+  }
 }
 
 .stage {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100svh;
   overflow: hidden;
   background: #000;
 }
@@ -160,7 +167,9 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  will-change: transform, filter;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 .section-two {
