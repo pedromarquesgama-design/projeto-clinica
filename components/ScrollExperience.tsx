@@ -2,10 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const SEQS = [
-  { dir: "sem", count: 35 }, // virando de frente sem a carne
-  { dir: "com", count: 40 }, // doutor com a carne
-];
+const SEQ1 = { dir: "sem", count: 35 }; // virando de frente sem a carne
+const SEQ2_MOBILE = { dir: "com", count: 40 }; // doutor com a carne (mobile)
+const SEQ2_DESKTOP = { dir: "com-desktop", count: 87 }; // doutor com a carne (PC & tablet)
+
 const src = (dir: string, i: number) => `/frames/${dir}/scene${String(i + 1).padStart(5, "0")}.jpg`;
 const clamp = (n: number, a: number, b: number) => Math.min(b, Math.max(a, n));
 const range = (p: number, a: number, b: number) => clamp((p - a) / (b - a), 0, 1);
@@ -15,7 +15,7 @@ const range = (p: number, a: number, b: number) => clamp((p - a) / (b - a), 0, 1
 // 0.30 -> 0.42 : About Us section slides up from bottom
 // 0.42 -> 0.60 : About Us stays in view for reading
 // 0.60 -> 0.70 : Video 2 section slides up from bottom over About Us
-// 0.70 -> 1.00 : Video 2 scrubs (40 frames) and ends right as Contact section appears
+// 0.70 -> 1.00 : Video 2 scrubs (87 frames on PC/tablet, 40 frames on mobile)
 const V1_END = 0.30;
 const ABOUT_IN_END = 0.42;
 const V2_IN_START = 0.60;
@@ -37,7 +37,11 @@ export default function ScrollExperience() {
   const aboutImgRef = useRef<HTMLImageElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
 
-  const images = useRef<HTMLImageElement[][]>([[], []]);
+  const images1 = useRef<HTMLImageElement[]>([]);
+  const images2Mobile = useRef<HTMLImageElement[]>([]);
+  const images2Desktop = useRef<HTMLImageElement[]>([]);
+  const isDesktopRef = useRef<boolean>(true);
+
   const targetProgress = useRef(0);
   const smoothProgress = useRef(0);
   const lastDrawn1 = useRef(-1);
@@ -91,8 +95,8 @@ export default function ScrollExperience() {
   }
 
   function applyFrame(pr: number, force = false) {
-    const a = images.current[0];
-    const b = images.current[1];
+    const a = images1.current;
+    const b = isDesktopRef.current ? images2Desktop.current : images2Mobile.current;
 
     // 1. Draw only the active video canvas
     if (pr <= ABOUT_IN_END + 0.02) {
@@ -177,34 +181,50 @@ export default function ScrollExperience() {
     }
   }
 
-  // Preload & pre-decode all frames into GPU memory so mobile never stalls mid-scroll
+  function loadSequenceInto(
+    seq: { dir: string; count: number },
+    targetArr: HTMLImageElement[],
+    onEachLoaded?: () => void
+  ) {
+    if (targetArr.length === seq.count) return;
+    for (let i = 0; i < seq.count; i++) {
+      const img = new Image();
+      img.decoding = "async";
+      const finish = () => {
+        onEachLoaded?.();
+      };
+      img.onload = () => {
+        if (typeof img.decode === "function") {
+          img.decode().then(finish).catch(finish);
+        } else {
+          finish();
+        }
+      };
+      img.onerror = finish;
+      img.src = src(seq.dir, i);
+      targetArr[i] = img;
+    }
+  }
+
+  // Preload & pre-decode all frames into GPU memory so mobile & desktop never stall mid-scroll
   useEffect(() => {
-    const total = SEQS.reduce((s, q) => s + q.count, 0);
+    const isDesktop = window.innerWidth >= 768;
+    isDesktopRef.current = isDesktop;
+    const seq2 = isDesktop ? SEQ2_DESKTOP : SEQ2_MOBILE;
+    const target2 = isDesktop ? images2Desktop.current : images2Mobile.current;
+
+    const total = SEQ1.count + seq2.count;
     let done = 0;
     const markDone = () => {
       done++;
-      setLoaded(Math.round((done / total) * 100));
-      if (done === 1 || done === total) {
+      setLoaded(Math.min(100, Math.round((done / total) * 100)));
+      if (done === 1 || done === SEQ1.count || done === total) {
         applyFrame(smoothProgress.current, true);
       }
     };
 
-    SEQS.forEach((q, si) => {
-      for (let i = 0; i < q.count; i++) {
-        const img = new Image();
-        img.decoding = "async";
-        img.onload = () => {
-          if (typeof img.decode === "function") {
-            img.decode().then(markDone).catch(markDone);
-          } else {
-            markDone();
-          }
-        };
-        img.onerror = markDone;
-        img.src = src(q.dir, i);
-        images.current[si][i] = img;
-      }
-    });
+    loadSequenceInto(SEQ1, images1.current, markDone);
+    loadSequenceInto(seq2, target2, markDone);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -233,6 +253,19 @@ export default function ScrollExperience() {
       }
       lastW = w;
       lastH = h;
+
+      const nowDesktop = w >= 768;
+      if (nowDesktop !== isDesktopRef.current) {
+        isDesktopRef.current = nowDesktop;
+        lastDrawn2.current = -1;
+        const seq2 = nowDesktop ? SEQ2_DESKTOP : SEQ2_MOBILE;
+        const target2 = nowDesktop ? images2Desktop.current : images2Mobile.current;
+        if (target2.length === 0) {
+          loadSequenceInto(seq2, target2, () => {
+            applyFrame(smoothProgress.current, true);
+          });
+        }
+      }
 
       const maxDpr = w < 768 ? 1.5 : 2;
       const dpr = Math.min(devicePixelRatio || 1, maxDpr);
